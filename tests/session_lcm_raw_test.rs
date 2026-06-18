@@ -4,7 +4,8 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tracedecay::sessions::lcm::LcmPreflightRequest;
 use tracedecay::sessions::source::{
-    ingest_source, ParsedTranscript, SessionDraft, StoredCursor, TranscriptSource,
+    ParsedTranscript, SessionDraft, StoredCursor, TranscriptIngestor, TranscriptSource,
+    TranscriptSourceDescriptor,
 };
 use tracedecay::sessions::SessionMessageRecord;
 
@@ -17,11 +18,12 @@ use common::{
 struct FakeTranscriptSource {
     path: PathBuf,
     content: String,
+    message_provider: String,
 }
 
 impl TranscriptSource for FakeTranscriptSource {
-    fn provider(&self) -> &'static str {
-        "fake"
+    fn descriptor(&self) -> TranscriptSourceDescriptor {
+        TranscriptSourceDescriptor::new("fake")
     }
 
     fn transcript_paths(&self, _project_root: &Path) -> Vec<PathBuf> {
@@ -48,7 +50,7 @@ impl TranscriptSource for FakeTranscriptSource {
                 parent_tool_use_id: None,
             },
             messages: vec![SessionMessageRecord {
-                provider: "fake".to_string(),
+                provider: self.message_provider.clone(),
                 message_id: "fake-message-1".to_string(),
                 session_id: "fake-session-1".to_string(),
                 role: "assistant".to_string(),
@@ -151,9 +153,12 @@ async fn transcript_ingest_preserves_lossless_raw_content() {
     let source = FakeTranscriptSource {
         path: transcript,
         content: content.clone(),
+        message_provider: "fake".to_string(),
     };
 
-    let stats = ingest_source(&db, &source, &project, None).await;
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&source)
+        .await;
     assert_eq!(stats.sessions_upserted, 1);
     assert_eq!(stats.messages_upserted, 1);
 
@@ -176,6 +181,38 @@ async fn transcript_ingest_preserves_lossless_raw_content() {
     assert!(raw.content.ends_with("::lossless-tail"));
     assert!(!raw.legacy_source);
     assert!(!raw.legacy_truncated);
+}
+
+#[tokio::test]
+async fn transcript_ingestor_stamps_messages_with_source_provider() {
+    let tmp = TempDir::new().unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let transcript = project.join("fake-transcript.jsonl");
+    std::fs::write(&transcript, "{}\n").unwrap();
+
+    let db = open_isolated_db(&tmp).await;
+    let source = FakeTranscriptSource {
+        path: transcript,
+        content: "provider comes from descriptor".to_string(),
+        message_provider: "adapter-bug".to_string(),
+    };
+
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&source)
+        .await;
+    assert_eq!(stats.sessions_upserted, 1);
+    assert_eq!(stats.messages_upserted, 1);
+
+    assert!(db
+        .get_session_message("adapter-bug", "fake-message-1")
+        .await
+        .is_none());
+    let stored = db
+        .get_session_message("fake", "fake-message-1")
+        .await
+        .expect("message should be keyed by descriptor provider");
+    assert_eq!(stored.provider, "fake");
 }
 
 #[tokio::test]

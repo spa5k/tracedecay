@@ -6,7 +6,7 @@ use tracedecay::sessions::cursor::{
     cursor_project_slug, ingest_cursor_transcript_event, ingest_cursor_transcript_event_capped,
     open_project_session_db, project_session_db_path, CursorSweepSource,
 };
-use tracedecay::sessions::source::ingest_source;
+use tracedecay::sessions::source::TranscriptIngestor;
 use tracedecay::sessions::SessionSearchScope;
 
 fn init_project(tmp: &TempDir) -> std::path::PathBuf {
@@ -654,7 +654,9 @@ async fn cursor_sweep_ingests_historical_transcripts() {
 
     let db = open_project_session_db(&project).await.unwrap();
     let sweep = CursorSweepSource::with_home(&home);
-    let stats = ingest_source(&db, &sweep, &project, None).await;
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&sweep)
+        .await;
     assert_eq!(stats.sessions_upserted, 2);
     assert_eq!(stats.messages_upserted, 2);
 
@@ -702,7 +704,9 @@ async fn cursor_sweep_after_hook_ingest_is_noop() {
     // The sweep shares the hook path's per-file parse offsets, so everything
     // the hook already ingested is a no-op: zero new sessions, zero new rows.
     let sweep = CursorSweepSource::with_home(&home);
-    let stats = ingest_source(&db, &sweep, &project, None).await;
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&sweep)
+        .await;
     assert_eq!(stats.sessions_upserted, 0);
     assert_eq!(stats.messages_upserted, 0);
 
@@ -721,7 +725,9 @@ async fn cursor_hook_after_sweep_is_noop() {
 
     let db = open_project_session_db(&project).await.unwrap();
     let sweep = CursorSweepSource::with_home(&home);
-    let swept = ingest_source(&db, &sweep, &project, None).await;
+    let swept = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&sweep)
+        .await;
     assert_eq!(swept.messages_upserted, 2);
 
     // A live hook firing on a transcript the sweep already ingested resumes
@@ -772,7 +778,9 @@ async fn cursor_sweep_picks_up_lines_appended_after_hook_ingest() {
     drop(file);
 
     let sweep = CursorSweepSource::with_home(&home);
-    let stats = ingest_source(&db, &sweep, &project, None).await;
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&sweep)
+        .await;
     assert_eq!(stats.sessions_upserted, 1);
     assert_eq!(stats.messages_upserted, 1);
 
@@ -811,7 +819,9 @@ async fn cursor_sweep_prefers_subagent_copy_over_toplevel_duplicate() {
 
     let db = open_project_session_db(&project).await.unwrap();
     let sweep = CursorSweepSource::with_home(&home);
-    let stats = ingest_source(&db, &sweep, &project, None).await;
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&sweep)
+        .await;
     assert_eq!(stats.sessions_upserted, 2);
     assert_eq!(stats.messages_upserted, 2);
 
@@ -855,7 +865,9 @@ async fn cursor_sweep_skips_ambiguous_project_slug() {
 
     let db = open_project_session_db(&project).await.unwrap();
     let sweep = CursorSweepSource::with_home(&home);
-    let stats = ingest_source(&db, &sweep, &project, None).await;
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&sweep)
+        .await;
     assert_eq!(stats.sessions_upserted, 0);
     assert_eq!(stats.messages_upserted, 0);
     assert!(db.get_session("cursor", "sweep-session").await.is_none());
@@ -872,14 +884,18 @@ async fn cursor_sweep_skips_projects_without_tracedecay() {
 
     let db = open_project_session_db(&scratch).await.unwrap();
     let sweep = CursorSweepSource::with_home(&home);
-    let skipped = ingest_source(&db, &sweep, &unindexed, None).await;
+    let skipped = TranscriptIngestor::new(&db, &unindexed)
+        .ingest_source(&sweep)
+        .await;
     assert_eq!(skipped.sessions_upserted, 0);
     assert_eq!(skipped.messages_upserted, 0);
 
     // Once the project is indexed, the same sweep picks its transcripts up.
     std::fs::create_dir_all(unindexed.join(".tracedecay")).unwrap();
     std::fs::write(unindexed.join(".tracedecay/tracedecay.db"), "").unwrap();
-    let indexed = ingest_source(&db, &sweep, &unindexed, None).await;
+    let indexed = TranscriptIngestor::new(&db, &unindexed)
+        .ingest_source(&sweep)
+        .await;
     assert_eq!(indexed.sessions_upserted, 2);
     assert_eq!(indexed.messages_upserted, 2);
 }

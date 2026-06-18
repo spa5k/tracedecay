@@ -26,6 +26,7 @@ use crate::sessions::shared::{
 };
 use crate::sessions::source::{
     read_changed_with_companion, ParsedTranscript, SessionDraft, TranscriptSource,
+    TranscriptSourceDescriptor,
 };
 use crate::sessions::SessionMessageRecord;
 
@@ -91,8 +92,8 @@ impl ClineLikeSource {
 }
 
 impl TranscriptSource for ClineLikeSource {
-    fn provider(&self) -> &'static str {
-        self.provider
+    fn descriptor(&self) -> TranscriptSourceDescriptor {
+        TranscriptSourceDescriptor::new(self.provider)
     }
 
     fn transcript_paths(&self, _project_root: &Path) -> Vec<PathBuf> {

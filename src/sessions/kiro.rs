@@ -24,7 +24,8 @@ use crate::sessions::shared::{
     title_from_messages, StoredCursor, TranscriptIngestStats,
 };
 use crate::sessions::source::{
-    collect_files_with_ext, read_changed_file, ParsedTranscript, SessionDraft, TranscriptSource,
+    collect_files_with_ext, read_changed_file, ParsedTranscript, SessionDraft, TranscriptIngestor,
+    TranscriptSource, TranscriptSourceDescriptor,
 };
 use crate::sessions::SessionMessageRecord;
 
@@ -59,8 +60,8 @@ impl KiroSource {
 }
 
 impl TranscriptSource for KiroSource {
-    fn provider(&self) -> &'static str {
-        PROVIDER
+    fn descriptor(&self) -> TranscriptSourceDescriptor {
+        TranscriptSourceDescriptor::new(PROVIDER)
     }
 
     fn transcript_paths(&self, project_root: &Path) -> Vec<PathBuf> {
@@ -134,7 +135,9 @@ pub async fn ingest_kiro_for_project(
     let Some(source) = KiroSource::new() else {
         return TranscriptIngestStats::default();
     };
-    crate::sessions::source::ingest_source(db, &source, project_root, max_new_bytes).await
+    TranscriptIngestor::with_max_new_bytes(db, project_root, max_new_bytes)
+        .ingest_source(&source)
+        .await
 }
 
 fn collect_workspace_session_files(sessions_root: &Path, project_root: &Path) -> Vec<PathBuf> {

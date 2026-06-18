@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::global_db::GlobalDb;
 use crate::sessions::shared::TranscriptIngestStats;
-use crate::sessions::source::{ingest_source, TranscriptSource};
+use crate::sessions::source::{TranscriptIngestor, TranscriptSource};
 
 pub mod claude;
 pub mod cline_like;
@@ -68,11 +68,9 @@ pub(crate) async fn ingest_sources(
     project_root: &Path,
     sources: &[Box<dyn TranscriptSource>],
 ) -> TranscriptIngestStats {
-    let mut stats = TranscriptIngestStats::default();
-    for source in sources {
-        stats = stats.merge(ingest_source(db, source.as_ref(), project_root, None).await);
-    }
-    stats
+    TranscriptIngestor::new(db, project_root)
+        .ingest_sources(sources)
+        .await
 }
 
 /// Provider-neutral metadata for an indexed agent session.

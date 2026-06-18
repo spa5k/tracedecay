@@ -1,7 +1,7 @@
 use tempfile::TempDir;
 use tracedecay::sessions::cline_like::ClineLikeSource;
 use tracedecay::sessions::cursor::open_project_session_db;
-use tracedecay::sessions::source::ingest_source;
+use tracedecay::sessions::source::TranscriptIngestor;
 
 fn setup(tmp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let home = tmp.path().join("home");
@@ -85,7 +85,9 @@ async fn assert_provider_ingests(
     db: &tracedecay::global_db::GlobalDb,
     project: &std::path::Path,
 ) {
-    let stats = ingest_source(db, &source, project, None).await;
+    let stats = TranscriptIngestor::new(db, project)
+        .ingest_source(&source)
+        .await;
     assert_eq!(stats.messages_upserted, 2);
 
     let results = db
@@ -132,7 +134,8 @@ async fn assert_provider_ingests(
 
     // ContentHash: unchanged full-rewrite file is a no-op.
     assert_eq!(
-        ingest_source(db, &source, project, None)
+        TranscriptIngestor::new(db, project)
+            .ingest_source(&source)
             .await
             .messages_upserted,
         0
@@ -212,13 +215,15 @@ async fn cline_ui_messages_only_change_triggers_usage_refresh() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = ClineLikeSource::cline_with_home(&home);
     assert_eq!(
-        ingest_source(&db, &source, &project, None)
+        TranscriptIngestor::new(&db, &project)
+            .ingest_source(&source)
             .await
             .messages_upserted,
         2
     );
     assert_eq!(
-        ingest_source(&db, &source, &project, None)
+        TranscriptIngestor::new(&db, &project)
+            .ingest_source(&source)
             .await
             .messages_upserted,
         0
@@ -245,7 +250,8 @@ async fn cline_ui_messages_only_change_triggers_usage_refresh() {
     .unwrap();
 
     assert_eq!(
-        ingest_source(&db, &source, &project, None)
+        TranscriptIngestor::new(&db, &project)
+            .ingest_source(&source)
             .await
             .messages_upserted,
         2
@@ -280,12 +286,9 @@ async fn cline_like_task_for_other_project_is_skipped() {
     );
 
     let db = open_project_session_db(&project).await.unwrap();
-    let stats = ingest_source(
-        &db,
-        &ClineLikeSource::cline_with_home(&home),
-        &project,
-        None,
-    )
-    .await;
+    let source = ClineLikeSource::cline_with_home(&home);
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&source)
+        .await;
     assert_eq!(stats.messages_upserted, 0);
 }

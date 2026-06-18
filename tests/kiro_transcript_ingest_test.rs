@@ -1,7 +1,7 @@
 use tempfile::TempDir;
 use tracedecay::sessions::cursor::open_project_session_db;
 use tracedecay::sessions::kiro::KiroSource;
-use tracedecay::sessions::source::ingest_source;
+use tracedecay::sessions::source::TranscriptIngestor;
 
 fn setup(tmp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let home = tmp.path().join("home");
@@ -120,7 +120,9 @@ async fn kiro_legacy_chat_populates_searchable_messages() {
 
     let db = open_project_session_db(&project).await.unwrap();
     let source = KiroSource::with_home(&home);
-    let stats = ingest_source(&db, &source, &project, None).await;
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&source)
+        .await;
     assert_eq!(stats.messages_upserted, 2);
 
     let results = db
@@ -151,7 +153,8 @@ async fn kiro_legacy_chat_populates_searchable_messages() {
     assert_eq!(second.timestamp, Some(1_800_000_001));
 
     assert_eq!(
-        ingest_source(&db, &source, &project, None)
+        TranscriptIngestor::new(&db, &project)
+            .ingest_source(&source)
             .await
             .messages_upserted,
         0
@@ -166,7 +169,9 @@ async fn kiro_workspace_sessions_json_is_ingested() {
 
     let db = open_project_session_db(&project).await.unwrap();
     let source = KiroSource::with_home(&home);
-    let stats = ingest_source(&db, &source, &project, None).await;
+    let stats = TranscriptIngestor::new(&db, &project)
+        .ingest_source(&source)
+        .await;
     assert_eq!(stats.messages_upserted, 2);
 
     let results = db
@@ -209,7 +214,8 @@ async fn kiro_transcript_for_other_project_is_skipped() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = KiroSource::with_home(&home);
     assert_eq!(
-        ingest_source(&db, &source, &project, None)
+        TranscriptIngestor::new(&db, &project)
+            .ingest_source(&source)
             .await
             .messages_upserted,
         0
