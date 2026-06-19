@@ -2,7 +2,7 @@ use std::io::Write;
 
 use tempfile::TempDir;
 use tracedecay::sessions::cursor::open_project_session_db;
-use tracedecay::sessions::source::TranscriptIngestor;
+use tracedecay::sessions::source::ingest_source;
 use tracedecay::sessions::vibe::VibeSource;
 
 fn setup(tmp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -65,9 +65,7 @@ async fn vibe_messages_populate_searchable_session_messages() {
 
     let db = open_project_session_db(&project).await.unwrap();
     let source = VibeSource::with_home(&home);
-    let stats = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let stats = ingest_source(&db, &source, &project, None).await;
     assert_eq!(stats.messages_upserted, 2);
 
     let results = db
@@ -113,15 +111,13 @@ async fn vibe_messages_are_incremental() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = VibeSource::with_home(&home);
     assert_eq!(
-        TranscriptIngestor::new(&db, &project)
-            .ingest_source(&source)
+        ingest_source(&db, &source, &project, None)
             .await
             .messages_upserted,
         2
     );
     assert_eq!(
-        TranscriptIngestor::new(&db, &project)
-            .ingest_source(&source)
+        ingest_source(&db, &source, &project, None)
             .await
             .messages_upserted,
         0
@@ -144,8 +140,7 @@ async fn vibe_messages_are_incremental() {
     drop(file);
 
     assert_eq!(
-        TranscriptIngestor::new(&db, &project)
-            .ingest_source(&source)
+        ingest_source(&db, &source, &project, None)
             .await
             .messages_upserted,
         1
@@ -163,8 +158,7 @@ async fn vibe_session_for_other_project_is_skipped() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = VibeSource::with_home(&home);
     assert_eq!(
-        TranscriptIngestor::new(&db, &project)
-            .ingest_source(&source)
+        ingest_source(&db, &source, &project, None)
             .await
             .messages_upserted,
         0

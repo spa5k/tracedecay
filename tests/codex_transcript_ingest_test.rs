@@ -3,7 +3,7 @@ use std::io::Write;
 use tempfile::TempDir;
 use tracedecay::sessions::codex::CodexSource;
 use tracedecay::sessions::cursor::open_project_session_db;
-use tracedecay::sessions::source::TranscriptIngestor;
+use tracedecay::sessions::source::ingest_source;
 
 fn setup(tmp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let home = tmp.path().join("home");
@@ -130,9 +130,7 @@ async fn codex_rollout_populates_user_and_agent_messages_only() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = CodexSource::with_home(&home);
 
-    let stats = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let stats = ingest_source(&db, &source, &project, None).await;
     // user_message + agent_message; the response_item duplicate is skipped.
     assert_eq!(stats.messages_upserted, 2);
     assert_eq!(stats.sessions_upserted, 1);
@@ -198,15 +196,13 @@ async fn codex_rollout_ingest_is_incremental() {
     let source = CodexSource::with_home(&home);
 
     assert_eq!(
-        TranscriptIngestor::new(&db, &project)
-            .ingest_source(&source)
+        ingest_source(&db, &source, &project, None)
             .await
             .messages_upserted,
         2
     );
     assert_eq!(
-        TranscriptIngestor::new(&db, &project)
-            .ingest_source(&source)
+        ingest_source(&db, &source, &project, None)
             .await
             .messages_upserted,
         0
@@ -229,8 +225,7 @@ async fn codex_rollout_ingest_is_incremental() {
     drop(f);
 
     assert_eq!(
-        TranscriptIngestor::new(&db, &project)
-            .ingest_source(&source)
+        ingest_source(&db, &source, &project, None)
             .await
             .messages_upserted,
         1
@@ -267,9 +262,7 @@ async fn codex_archived_rollout_is_ingested() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = CodexSource::with_home(&home);
 
-    let stats = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let stats = ingest_source(&db, &source, &project, None).await;
     assert_eq!(stats.sessions_upserted, 1);
     assert_eq!(stats.messages_upserted, 1);
     let session = db
@@ -354,9 +347,7 @@ async fn codex_tool_loop_usage_sums_per_turn_and_skips_duplicates() {
 
     let db = open_project_session_db(&project).await.unwrap();
     let source = CodexSource::with_home(&home);
-    TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    ingest_source(&db, &source, &project, None).await;
 
     let usage_of = |hits: &[tracedecay::sessions::SessionMessageSearchResult], needle: &str| {
         let hit = hits
@@ -439,9 +430,7 @@ async fn codex_model_tracks_turn_context_not_model_provider() {
 
     let db = open_project_session_db(&project).await.unwrap();
     let source = CodexSource::with_home(&home);
-    TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    ingest_source(&db, &source, &project, None).await;
 
     let hits = db.search_session_messages("codex", None, "model", 10).await;
     assert_eq!(hits.len(), 3);
@@ -477,9 +466,7 @@ async fn codex_subagent_rollout_uses_parent_link_from_session_meta() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = CodexSource::with_home(&home);
 
-    let stats = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let stats = ingest_source(&db, &source, &project, None).await;
     assert_eq!(stats.sessions_upserted, 2);
     assert_eq!(stats.messages_upserted, 3);
 

@@ -1478,17 +1478,13 @@ async fn ingest_selected_session_sources(
             let Some(source) = tracedecay::sessions::cursor::CursorSweepSource::new() else {
                 return tracedecay::sessions::source::TranscriptIngestStats::default();
             };
-            tracedecay::sessions::source::TranscriptIngestor::new(db, project_root)
-                .ingest_source(&source)
-                .await
+            tracedecay::sessions::source::ingest_source(db, &source, project_root, None).await
         }
         SessionProvider::Codex => {
             let Some(source) = tracedecay::sessions::codex::CodexSource::new() else {
                 return tracedecay::sessions::source::TranscriptIngestStats::default();
             };
-            tracedecay::sessions::source::TranscriptIngestor::new(db, project_root)
-                .ingest_source(&source)
-                .await
+            tracedecay::sessions::source::ingest_source(db, &source, project_root, None).await
         }
     }
 }

@@ -2,9 +2,9 @@
 //!
 //! Every agent transcript — Cursor, Claude Code, Codex, Vibe, … — converges to
 //! the same provider-neutral [`SessionMessageRecord`] rows in a per-project
-//! `sessions.db`. Provider adapters only locate and parse transcripts; the
-//! [`TranscriptIngestor`] owns cursor persistence, session merging, and message
-//! upserts.
+//! `sessions.db`. This module factors the *incremental, fail-open* machinery
+//! out of the original Cursor-specific implementation so any adapter can plug
+//! in by implementing [`TranscriptSource`].
 //!
 //! ## Incremental cursors
 //!
@@ -88,30 +88,17 @@ pub struct ParsedTranscript {
     pub new_cursor: StoredCursor,
 }
 
-/// Stable identity and ingestion metadata for one provider adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TranscriptSourceDescriptor {
-    /// Provider id stored on every session/message row (e.g. `"claude"`).
-    pub provider: &'static str,
-}
-
-impl TranscriptSourceDescriptor {
-    pub const fn new(provider: &'static str) -> Self {
-        Self { provider }
-    }
-}
-
 /// A pluggable transcript provider.
 ///
 /// Implementors locate their transcript files for a project and parse only the
-/// content appended/changed since the last run. [`TranscriptIngestor`] handles
-/// offset persistence and idempotent session/message upserts.
+/// content appended/changed since the last run. The shared [`ingest_source`]
+/// driver handles offset persistence and idempotent session/message upserts.
 ///
 /// `Send + Sync` is required so boxed sources can be driven from detached
 /// background tasks (e.g. the serve-side startup sweep).
 pub trait TranscriptSource: Send + Sync {
-    /// Provider identity plus driver-visible metadata.
-    fn descriptor(&self) -> TranscriptSourceDescriptor;
+    /// Stable provider id stored on every session/message row (e.g. `"claude"`).
+    fn provider(&self) -> &'static str;
 
     /// Candidate transcript files to consider for `project_root`. May scan
     /// per-project and/or OS-specific global directories. Non-existent paths
@@ -134,162 +121,119 @@ pub trait TranscriptSource: Send + Sync {
     ) -> Option<ParsedTranscript>;
 }
 
-/// Provider-neutral ingestion driver for file-based transcript sources.
+/// Drive a single source to completion against `db`, ingesting every transcript
+/// it locates for `project_root`. Fail-open: per-file errors are swallowed.
 ///
-/// This is the module's external boundary: callers choose sources and an optional
-/// hot-path byte cap; the driver owns every storage invariant below that point.
-pub struct TranscriptIngestor<'a> {
-    db: &'a GlobalDb,
-    project_root: &'a Path,
+/// `max_new_bytes` bounds how much newly-appended content a byte-offset source
+/// will read in one call (used to keep per-prompt hot paths inside budget);
+/// pass `None` for an unbounded catch-up.
+pub async fn ingest_source(
+    db: &GlobalDb,
+    source: &dyn TranscriptSource,
+    project_root: &Path,
     max_new_bytes: Option<u64>,
+) -> TranscriptIngestStats {
+    let mut stats = TranscriptIngestStats::default();
+    for path in source.transcript_paths(project_root) {
+        stats = stats.merge(ingest_one(db, source, &path, project_root, max_new_bytes).await);
+    }
+    stats
 }
 
-impl<'a> TranscriptIngestor<'a> {
-    /// Build an unbounded catch-up ingestor.
-    pub fn new(db: &'a GlobalDb, project_root: &'a Path) -> Self {
-        Self {
-            db,
-            project_root,
-            max_new_bytes: None,
-        }
+/// Ingest one transcript file: load the prior cursor, parse new content, persist
+/// the advanced cursor, then upsert the session (merging preserved fields) and
+/// its new messages.
+async fn ingest_one(
+    db: &GlobalDb,
+    source: &dyn TranscriptSource,
+    path: &Path,
+    project_root: &Path,
+    max_new_bytes: Option<u64>,
+) -> TranscriptIngestStats {
+    let path_str = path.to_string_lossy().to_string();
+    let prev_offset = db.get_parse_offset(&path_str).await.unwrap_or_default();
+    let prev = StoredCursor {
+        position: prev_offset.byte_offset,
+        mtime: prev_offset.mtime,
+        file_id: prev_offset.file_id,
+    };
+    let Some(parsed) = source.parse_new(path, prev, project_root, max_new_bytes) else {
+        return TranscriptIngestStats::default();
+    };
+
+    if parsed.messages.is_empty() {
+        // Non-message append (e.g. blank/undecodable rows) still advances the
+        // cursor so the next ingest only sees genuinely new content.
+        db.set_parse_offset(
+            &path_str,
+            ParseOffset {
+                byte_offset: parsed.new_cursor.position,
+                mtime: parsed.new_cursor.mtime,
+                file_id: parsed.new_cursor.file_id,
+            },
+        )
+        .await;
+        return TranscriptIngestStats::default();
     }
 
-    /// Build a hot-path ingestor that defers large append-only backlogs.
-    pub fn with_max_new_bytes(
-        db: &'a GlobalDb,
-        project_root: &'a Path,
-        max_new_bytes: Option<u64>,
-    ) -> Self {
-        Self {
-            db,
-            project_root,
-            max_new_bytes,
-        }
+    let provider = source.provider();
+    let draft = parsed.draft;
+    let existing = db.get_session(provider, &draft.session_id).await;
+    // Preserve the session's original start time and title across appends; only
+    // advance ended_at to the latest message seen.
+    let started_at = existing
+        .as_ref()
+        .and_then(|session| session.started_at)
+        .or_else(|| {
+            parsed
+                .messages
+                .first()
+                .and_then(|message| message.timestamp)
+        });
+    let title = existing
+        .as_ref()
+        .and_then(|session| session.title.clone())
+        .or(draft.title);
+    let ended_at = parsed
+        .messages
+        .last()
+        .and_then(|message| message.timestamp)
+        .or_else(|| existing.as_ref().and_then(|session| session.ended_at));
+
+    let session = SessionRecord {
+        provider: provider.to_string(),
+        session_id: draft.session_id,
+        project_key: draft.project_key,
+        project_path: draft.project_path,
+        title,
+        started_at,
+        ended_at,
+        transcript_path: Some(path.to_string_lossy().to_string()),
+        metadata_json: draft.metadata_json,
+        parent_session_id: draft.parent_session_id,
+        is_subagent: draft.is_subagent,
+        agent_id: draft.agent_id,
+        parent_tool_use_id: draft.parent_tool_use_id,
+    };
+
+    if !db
+        .upsert_transcript_batch(
+            &session,
+            &parsed.messages,
+            &path_str,
+            ParseOffset {
+                byte_offset: parsed.new_cursor.position,
+                mtime: parsed.new_cursor.mtime,
+                file_id: parsed.new_cursor.file_id,
+            },
+        )
+        .await
+    {
+        return TranscriptIngestStats::default();
     }
-
-    /// Drive a set of sources to completion.
-    pub async fn ingest_sources(
-        &self,
-        sources: &[Box<dyn TranscriptSource>],
-    ) -> TranscriptIngestStats {
-        let mut stats = TranscriptIngestStats::default();
-        for source in sources {
-            stats = stats.merge(self.ingest_source(source.as_ref()).await);
-        }
-        stats
-    }
-
-    /// Drive one source to completion. Fail-open: per-file errors are swallowed.
-    pub async fn ingest_source(&self, source: &dyn TranscriptSource) -> TranscriptIngestStats {
-        let mut stats = TranscriptIngestStats::default();
-        for path in source.transcript_paths(self.project_root) {
-            stats = stats.merge(self.ingest_path(source, &path).await);
-        }
-        stats
-    }
-
-    /// Ingest one transcript path through the provider adapter.
-    async fn ingest_path(
-        &self,
-        source: &dyn TranscriptSource,
-        path: &Path,
-    ) -> TranscriptIngestStats {
-        let path_str = path.to_string_lossy().to_string();
-        let prev_offset = self
-            .db
-            .get_parse_offset(&path_str)
-            .await
-            .unwrap_or_default();
-        let prev = StoredCursor {
-            position: prev_offset.byte_offset,
-            mtime: prev_offset.mtime,
-            file_id: prev_offset.file_id,
-        };
-        let Some(mut parsed) = source.parse_new(path, prev, self.project_root, self.max_new_bytes)
-        else {
-            return TranscriptIngestStats::default();
-        };
-
-        let provider = source.descriptor().provider;
-        for message in &mut parsed.messages {
-            message.provider = provider.to_string();
-        }
-
-        if parsed.messages.is_empty() {
-            // Non-message append (e.g. blank/undecodable rows) still advances
-            // the cursor so the next ingest only sees genuinely new content.
-            self.db
-                .set_parse_offset(
-                    &path_str,
-                    ParseOffset {
-                        byte_offset: parsed.new_cursor.position,
-                        mtime: parsed.new_cursor.mtime,
-                        file_id: parsed.new_cursor.file_id,
-                    },
-                )
-                .await;
-            return TranscriptIngestStats::default();
-        }
-
-        let draft = parsed.draft;
-        let existing = self.db.get_session(provider, &draft.session_id).await;
-        // Preserve the session's original start time and title across appends;
-        // only advance ended_at to the latest message seen.
-        let started_at = existing
-            .as_ref()
-            .and_then(|session| session.started_at)
-            .or_else(|| {
-                parsed
-                    .messages
-                    .first()
-                    .and_then(|message| message.timestamp)
-            });
-        let title = existing
-            .as_ref()
-            .and_then(|session| session.title.clone())
-            .or(draft.title);
-        let ended_at = parsed
-            .messages
-            .last()
-            .and_then(|message| message.timestamp)
-            .or_else(|| existing.as_ref().and_then(|session| session.ended_at));
-
-        let session = SessionRecord {
-            provider: provider.to_string(),
-            session_id: draft.session_id,
-            project_key: draft.project_key,
-            project_path: draft.project_path,
-            title,
-            started_at,
-            ended_at,
-            transcript_path: Some(path.to_string_lossy().to_string()),
-            metadata_json: draft.metadata_json,
-            parent_session_id: draft.parent_session_id,
-            is_subagent: draft.is_subagent,
-            agent_id: draft.agent_id,
-            parent_tool_use_id: draft.parent_tool_use_id,
-        };
-
-        if !self
-            .db
-            .upsert_transcript_batch(
-                &session,
-                &parsed.messages,
-                &path_str,
-                ParseOffset {
-                    byte_offset: parsed.new_cursor.position,
-                    mtime: parsed.new_cursor.mtime,
-                    file_id: parsed.new_cursor.file_id,
-                },
-            )
-            .await
-        {
-            return TranscriptIngestStats::default();
-        }
-        TranscriptIngestStats {
-            sessions_upserted: 1,
-            messages_upserted: parsed.messages.len() as u64,
-        }
+    TranscriptIngestStats {
+        sessions_upserted: 1,
+        messages_upserted: parsed.messages.len() as u64,
     }
 }
 

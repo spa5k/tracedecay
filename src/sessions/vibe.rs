@@ -21,7 +21,6 @@ use crate::sessions::shared::{
 };
 use crate::sessions::source::{
     collect_files_with_ext, stream_new_jsonl, ParsedTranscript, SessionDraft, TranscriptSource,
-    TranscriptSourceDescriptor,
 };
 use crate::sessions::SessionMessageRecord;
 
@@ -56,8 +55,8 @@ impl VibeSource {
 }
 
 impl TranscriptSource for VibeSource {
-    fn descriptor(&self) -> TranscriptSourceDescriptor {
-        TranscriptSourceDescriptor::new(PROVIDER)
+    fn provider(&self) -> &'static str {
+        PROVIDER
     }
 
     fn transcript_paths(&self, _project_root: &Path) -> Vec<PathBuf> {

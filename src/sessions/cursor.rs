@@ -8,8 +8,8 @@ use crate::sessions::shared::{
     title_from_messages, StoredCursor,
 };
 use crate::sessions::source::{
-    collect_files_with_ext, stream_new_jsonl, ParsedTranscript, SessionDraft, TranscriptIngestor,
-    TranscriptSource, TranscriptSourceDescriptor,
+    collect_files_with_ext, ingest_source, stream_new_jsonl, ParsedTranscript, SessionDraft,
+    TranscriptSource,
 };
 use crate::sessions::SessionMessageRecord;
 
@@ -167,8 +167,8 @@ struct CursorEventSource {
 }
 
 impl TranscriptSource for CursorEventSource {
-    fn descriptor(&self) -> TranscriptSourceDescriptor {
-        TranscriptSourceDescriptor::new("cursor")
+    fn provider(&self) -> &'static str {
+        "cursor"
     }
 
     fn transcript_paths(&self, _project_root: &Path) -> Vec<PathBuf> {
@@ -330,9 +330,7 @@ pub async fn ingest_cursor_transcript_event_capped(
         transcript_path,
         include_subagents: true,
     };
-    let stats = TranscriptIngestor::with_max_new_bytes(db, &project_root, max_new_bytes)
-        .ingest_source(&source)
-        .await;
+    let stats = ingest_source(db, &source, &project_root, max_new_bytes).await;
     CursorTranscriptIngestStats {
         sessions_upserted: stats.sessions_upserted,
         messages_upserted: stats.messages_upserted,
@@ -377,8 +375,8 @@ impl CursorSweepSource {
 }
 
 impl TranscriptSource for CursorSweepSource {
-    fn descriptor(&self) -> TranscriptSourceDescriptor {
-        TranscriptSourceDescriptor::new("cursor")
+    fn provider(&self) -> &'static str {
+        "cursor"
     }
 
     fn transcript_paths(&self, project_root: &Path) -> Vec<PathBuf> {

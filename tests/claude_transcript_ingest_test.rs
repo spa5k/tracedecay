@@ -3,7 +3,7 @@ use std::io::Write;
 use tempfile::TempDir;
 use tracedecay::sessions::claude::ClaudeSource;
 use tracedecay::sessions::cursor::open_project_session_db;
-use tracedecay::sessions::source::TranscriptIngestor;
+use tracedecay::sessions::source::ingest_source;
 
 /// Builds an initialized project dir and returns (home, project_root).
 fn setup(tmp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -106,9 +106,7 @@ async fn claude_transcript_populates_searchable_messages() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = ClaudeSource::with_home(&home);
 
-    let stats = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let stats = ingest_source(&db, &source, &project, None).await;
     assert_eq!(stats.messages_upserted, 2);
     assert_eq!(stats.sessions_upserted, 1);
 
@@ -179,14 +177,10 @@ async fn claude_transcript_ingest_is_incremental() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = ClaudeSource::with_home(&home);
 
-    let first = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let first = ingest_source(&db, &source, &project, None).await;
     assert_eq!(first.messages_upserted, 2);
     // Re-ingesting the unchanged file is a no-op.
-    let second = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let second = ingest_source(&db, &source, &project, None).await;
     assert_eq!(second.messages_upserted, 0);
 
     // Appending one line ingests only that line.
@@ -209,9 +203,7 @@ async fn claude_transcript_ingest_is_incremental() {
     .unwrap();
     drop(f);
 
-    let third = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let third = ingest_source(&db, &source, &project, None).await;
     assert_eq!(third.messages_upserted, 1);
 }
 
@@ -227,9 +219,7 @@ async fn claude_transcript_for_other_project_is_skipped() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = ClaudeSource::with_home(&home);
 
-    let stats = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let stats = ingest_source(&db, &source, &project, None).await;
     assert_eq!(
         stats.messages_upserted, 0,
         "a transcript whose cwd is a different project must be skipped"
@@ -249,9 +239,7 @@ async fn claude_missing_projects_dir_is_silent_noop() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = ClaudeSource::with_home(&home);
 
-    let stats = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let stats = ingest_source(&db, &source, &project, None).await;
     assert_eq!(stats.sessions_upserted, 0);
     assert_eq!(stats.messages_upserted, 0);
 }
@@ -266,9 +254,7 @@ async fn claude_subagent_layout_uses_parent_link_and_parent_cwd_fallback() {
     let db = open_project_session_db(&project).await.unwrap();
     let source = ClaudeSource::with_home(&home);
 
-    let stats = TranscriptIngestor::new(&db, &project)
-        .ingest_source(&source)
-        .await;
+    let stats = ingest_source(&db, &source, &project, None).await;
     assert_eq!(stats.sessions_upserted, 2);
     assert_eq!(stats.messages_upserted, 3);
 
